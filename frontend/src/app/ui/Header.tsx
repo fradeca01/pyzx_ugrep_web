@@ -1,6 +1,6 @@
 "use client";
 
-const REPOSITORY_URL = "https://github.com/fradeca01/pyzx_ugrep_web";
+const REPOSITORY_URL = "https://github.com/fradeca01/pyzx_ugrep";
 
 export default function Header() {
 
