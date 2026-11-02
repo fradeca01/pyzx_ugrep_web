@@ -1,0 +1,31 @@
+venv*
+.venv
+.idea
+.vs
+.vscode
+.mypy_cache
+.pytest_cache
+.codex
+.agents
+
+__pycache__/
+*.pyc
+
+# frontend dependencies and build output
+frontend/node_modules/
+frontend/.next/
+frontend/out/
+frontend/build/
+frontend/dist/
+frontend/coverage/
+frontend/next-env.d.ts
+frontend/*.tsbuildinfo
+
+# env files
+frontend/.env*
+!frontend/.env.example
+
+# misc
+.DS_Store
+*.pem
+*.log
