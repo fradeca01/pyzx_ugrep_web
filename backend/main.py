@@ -1,15 +1,21 @@
 import asyncio
+import logging
+import re
+import resource
+import signal
 import time
 import uuid
 import json
 import os
 import stim
+from collections import defaultdict, deque
 from contextlib import asynccontextmanager
 from multiprocessing import Process, Queue
 from queue import Empty
 from typing import Dict, Any, Optional, List
 import psutil
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 from fastapi.middleware.cors import CORSMiddleware
 
@@ -22,6 +28,12 @@ MAX_GENERATE_N = int(os.getenv("UGR_MAX_GENERATE_N", "40"))
 MAX_DOT_NODES = int(os.getenv("UGR_MAX_DOT_NODES", "40"))
 MAX_SOLVE_NODES = int(os.getenv("UGR_MAX_SOLVE_NODES", "24"))
 MAX_STABILIZERS = int(os.getenv("UGR_MAX_STABILIZERS", "64"))
+MAX_JOB_MEMORY_MB = int(os.getenv("UGR_MAX_JOB_MEMORY_MB", "2048"))
+MAX_REQUEST_BYTES = int(os.getenv("UGR_MAX_REQUEST_BYTES", str(1024 * 1024)))
+RATE_LIMIT_PER_MINUTE = int(os.getenv("UGR_RATE_LIMIT_PER_MINUTE", "20"))
+
+logger = logging.getLogger("uvicorn.error")
+STABILIZER_PATTERN = re.compile(r"[+-]?i?[IXYZ_]+")
 
 
 # success: True request completed correctly -> Workflow is running appropiately
@@ -112,6 +124,11 @@ def validate_stabilizer_input(stabilizers: List[str], n: int, k: int) -> Optiona
         return f"Expected {n - k} stabilizers, got {len(stabilizers)}."
     if len(stabilizers) > MAX_STABILIZERS:
         return f"Too many stabilizers. Maximum allowed value is {MAX_STABILIZERS}."
+    for stabilizer in stabilizers:
+        if not STABILIZER_PATTERN.fullmatch(stabilizer):
+            return "Stabilizers may only contain the characters I, X, Y and Z, with an optional leading sign."
+        if len(stabilizer.lstrip("+-i")) != n:
+            return f"Every stabilizer must act on exactly {n} qubits."
     return None
 
 
@@ -155,6 +172,17 @@ def stop_job(job: Job) -> None:
     close_job_resources(job)
 
 
+def run_job(target, args):
+    # The child inherits uvicorn's signal handlers, which would swallow terminate().
+    signal.signal(signal.SIGTERM, signal.SIG_DFL)
+    signal.signal(signal.SIGINT, signal.SIG_DFL)
+    if MAX_JOB_MEMORY_MB > 0:
+        # The limit applies to the whole address space, which the child already inherits.
+        limit = psutil.Process().memory_info().vms + MAX_JOB_MEMORY_MB * 1024 * 1024
+        resource.setrlimit(resource.RLIMIT_AS, (limit, limit))
+    target(*args)
+
+
 def start_limited_job(target, *args) -> tuple[Optional[str], Optional[str]]:
     error = capacity_error()
     if error:
@@ -163,7 +191,7 @@ def start_limited_job(target, *args) -> tuple[Optional[str], Optional[str]]:
     now = time.time()
     job_id = str(uuid.uuid4())
     queue = Queue()
-    process = Process(target=target, args=(*args, queue))
+    process = Process(target=run_job, args=(target, (*args, queue)))
     JOBS[job_id] = Job(
         process=process,
         status="processing",
@@ -177,7 +205,8 @@ def start_limited_job(target, *args) -> tuple[Optional[str], Optional[str]]:
     except Exception as exc:
         job = JOBS.pop(job_id)
         close_job_resources(job)
-        return None, f"Error spawning the process: {str(exc)}"
+        logger.exception("Error spawning the process")
+        return None, "Error spawning the process"
 
     return job_id, None
 
@@ -187,24 +216,25 @@ def kill_process_tree(pid: int):
     """
     try:
         parent = psutil.Process(pid)
-        children = parent.children(recursive=True)
-        
-        for child in children:
-            print(f"Killing child process: {child.pid}")
-            child.terminate()
-        
-        _, alive = psutil.wait_procs(children, timeout=3)
-        for p in alive:
-            p.kill() 
-
-        print(f"Killing parent process: {parent.pid}")
-        parent.terminate()
-        parent.wait(timeout=3)
-        
+        processes = parent.children(recursive=True) + [parent]
     except psutil.NoSuchProcess:
         print("Process already dead.")
-    except Exception as e:
-        print(f"Error killing process tree: {e}")
+        return
+
+    for process in processes:
+        try:
+            process.terminate()
+        except psutil.NoSuchProcess:
+            pass
+
+    _, alive = psutil.wait_procs(processes, timeout=3)
+    for process in alive:
+        print(f"Force killing process: {process.pid}")
+        try:
+            process.kill()
+        except psutil.NoSuchProcess:
+            pass
+    psutil.wait_procs(alive, timeout=3)
 
 async def cleanup_stale_jobs():
     """Controlla periodicamente se ci sono job abbandonati."""
@@ -236,13 +266,44 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(lifespan=lifespan)
 
+RATE_LIMITED_PATHS = {"/get_graph", "/from_dot", "/solve"}
+REQUEST_TIMES: Dict[str, deque] = defaultdict(deque)
+
+
+def rejected(status_code: int, error: str) -> JSONResponse:
+    return JSONResponse(status_code=status_code, content={"success": False, "error": error})
+
+
+@app.middleware("http")
+async def limit_requests(request: Request, call_next):
+    if request.headers.get("transfer-encoding"):
+        return rejected(411, "Chunked request bodies are not supported.")
+    content_length = request.headers.get("content-length", "0")
+    if not content_length.isdigit() or int(content_length) > MAX_REQUEST_BYTES:
+        return rejected(413, f"Request is too large. Maximum size is {MAX_REQUEST_BYTES} bytes.")
+
+    if request.method == "POST" and request.url.path in RATE_LIMITED_PATHS and RATE_LIMIT_PER_MINUTE > 0:
+        client = request.client.host if request.client else "unknown"
+        now = time.time()
+        times = REQUEST_TIMES[client]
+        while times and now - times[0] > 60:
+            times.popleft()
+        if len(times) >= RATE_LIMIT_PER_MINUTE:
+            return rejected(429, "Too many requests. Please wait a minute and try again.")
+        times.append(now)
+        if len(REQUEST_TIMES) > 10000:
+            for key in [k for k, v in REQUEST_TIMES.items() if not v or now - v[-1] > 60]:
+                del REQUEST_TIMES[key]
+
+    return await call_next(request)
+
+
 origins = ["http://localhost:3000", "http://localhost", "https://fradeca01.github.io"]
 app.add_middleware(
     CORSMiddleware,
     allow_origins=origins,
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_methods=["GET", "POST"],
+    allow_headers=["Content-Type"],
 )
 
 try:
@@ -272,7 +333,7 @@ def run_generate_graph(stabilizers, n, k, rq):
         rq.put({"success" : True, "status" : "completed", "error" : None, "data": d})
     except Exception as e:
         print(e)
-        rq.put({"success" : False  , "status": "completed", "error": f"Cannot generate graph: {str(e)}", "data" : None})
+        rq.put({"success" : False  , "status": "completed", "error": f"Cannot generate graph: {str(e)[:200]}", "data" : None})
 
 
 def run_from_graph(inputs, adjacency_list, pivots, rq):
@@ -294,7 +355,7 @@ def run_from_graph(inputs, adjacency_list, pivots, rq):
         rq.put({"success" : True, "status" : "completed", "error" : None, "data": d})
 
     except Exception as e:
-        rq.put({"success" : False, "status": "completed", "error": f"Cannot generate graph: {str(e)}", "data" : None})
+        rq.put({"success" : False, "status": "completed", "error": f"Cannot generate graph: {str(e)[:200]}", "data" : None})
 
 
 @app.post("/from_dot", response_model=JobResponse | ErrorResponse)
@@ -362,9 +423,11 @@ async def from_dot(input_data : GraphInput):
                 return {"success": False, "error": error}
             return {"success": True, "job_id": job_id}
         except Exception as e:
-            return {"success": False, "error": f"Error spawning the process: {str(e)}"}
+            logger.exception("Error spawning the process")
+            return {"success": False, "error": "Error spawning the process"}
     except Exception as e:
-        return {"success": False, "error": f"Error processing the input: {str(e)}"}
+        logger.exception("Error processing the DOT input")
+        return {"success": False, "error": "Invalid graph input"}
 
 
 
@@ -436,8 +499,11 @@ async def start_job(input_data: StabilizerInput):
             if validation_error:
                 return {"success": False, "error": validation_error}
             
-    except Exception as e:
-        return {"success" : False, "error" : f"Error processing input: {str(e)}"}
+    except HTTPException as e:
+        return {"success" : False, "error" : e.detail}
+    except Exception:
+        logger.exception("Error processing the code input")
+        return {"success" : False, "error" : "Invalid code input"}
     try:
         estimated_time = round(0.005 * (n ** 3), 1) 
         job_id, error = start_limited_job(run_generate_graph, stabilizers, n, k)
@@ -446,9 +512,9 @@ async def start_job(input_data: StabilizerInput):
 
         
         return {"success": True, "job_id": job_id, "estimated_time": estimated_time}
-    except Exception as e:
-        print(str(e))
-        return {"success": False, "error": str(e)}
+    except Exception:
+        logger.exception("Error starting the job")
+        return {"success": False, "error": "Error starting the job"}
 
 
 @app.get("/status/{job_id}", response_model=DataResponse | ErrorResponse)
@@ -499,9 +565,11 @@ async def check_status(job_id: str):
             close_job_resources(job)
             del JOBS[job_id]
             return {"success": False, "error": "Process is dead and cannot retrieve status"}
-    except Exception as e:
-        print(e)
-        return {"success": False, "error": f"Error retrieving status: {str(e)}"}
+    except HTTPException as e:
+        return {"success": False, "error": e.detail}
+    except Exception:
+        logger.exception("Error retrieving status")
+        return {"success": False, "error": "Error retrieving status"}
 
 
 @app.post("/cancel/{job_id}", response_model=DataResponse)
