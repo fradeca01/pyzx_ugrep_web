@@ -1,4 +1,4 @@
-ugr @ git+https://github.com/fradeca01/pyzx_ugrep.git@2e6406576d2c48b120956e9c8f07a10b3f95a268
+ugr @ git+https://github.com/fradeca01/pyzx_ugrep.git@deploy
 fastapi[standard]
 psutil
 stim
