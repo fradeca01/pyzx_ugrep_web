@@ -1,59 +1,63 @@
 'use client';
 
-import "@/app/globals.css";
 import React, { useState } from "react";
 import Sidebar from "@/app/ui/Sidebar";
 import PropertyBar from "@/app/ui/PropertyBar";
 import MainView from "@/app/ui/MainView";
-import CircuitDrawer from "@/app/ui/CircuitDrawer"; 
+import CircuitDrawer from "@/app/ui/CircuitDrawer";
+import { BackendGraphData } from "@/app/ui/common";
 
-interface BackendGraphData {
-    inputs: number[];
-    adjacency_list: number[][];
-    distance_upper_bound: number;
-    distance_lower_bound?: number;
-    qasmEncoder: string;
-}
+// Below this width the two panels would cover each other, so only one stays open.
+const isNarrowScreen = () => window.matchMedia("(max-width: 767px)").matches;
 
 export default function Home() {
-    const [open, setOpen] = useState(true);
     const [isSidebarOpen, setSidebarOpen] = useState<boolean>(true);
     const [isRightSidebarOpen, setRightSidebarOpen] = useState<boolean>(false);
     const [backendGraphData, setBackendGraphData] = useState<BackendGraphData | null>(null);
+    const [isCircuitDrawerOpen, setCircuitDrawerOpen] = useState<boolean>(false);
 
     const graphInserted = (data: BackendGraphData | null) => {
         setBackendGraphData(data);
-        setRightSidebarOpen(true);
+        // On a phone the panels would hide the new graph, so show the graph first.
+        if (isNarrowScreen()) {
+            setSidebarOpen(false);
+            setRightSidebarOpen(false);
+        } else {
+            setRightSidebarOpen(true);
+        }
     }
 
+    const openSidebar = () => {
+        setSidebarOpen(true);
+        if (isNarrowScreen()) setRightSidebarOpen(false);
+    }
 
-
-    const [isCircuitDrawerOpen, setCircuitDrawerOpen] = useState<boolean>(false);
+    const openRightSidebar = () => {
+        setRightSidebarOpen(true);
+        if (isNarrowScreen()) setSidebarOpen(false);
+    }
 
     return (
-
-        <div className="flex h-ful flex-row justify-start items-center">
-            {/* <Sidebar open = {open} setOpen={setOpen} />    */}
+        <div className="absolute inset-0 overflow-hidden">
+            <MainView backendGraphData={backendGraphData} />
             <Sidebar
                 isOpen={isSidebarOpen}
                 onClose={() => setSidebarOpen(false)}
-                onOpen={() => setSidebarOpen(true)}
+                onOpen={openSidebar}
                 onGraphDataReceived={graphInserted}
             />
             <PropertyBar
                 isOpen={isRightSidebarOpen}
                 onClose={() => setRightSidebarOpen(false)}
-                onOpen={() => setRightSidebarOpen(true)}
+                onOpen={openRightSidebar}
                 backendGraphData={backendGraphData}
                 onOpenEncoder={() => setCircuitDrawerOpen(true)}
             />
-            <MainView open={open} setOpen={setOpen} backendGraphData={backendGraphData} />
             <CircuitDrawer
                 isOpen={isCircuitDrawerOpen}
                 onClose={() => setCircuitDrawerOpen(false)}
                 qasmData={backendGraphData}
             />
         </div>
-
     )
 }

@@ -2,14 +2,7 @@
 
 import { useState, useRef } from 'react';
 import { BACKEND_URL } from "../config";
-
-interface BackendGraphData {
-    inputs: number[];
-    adjacency_list: number[][];
-    distance_upper_bound: number;
-    distance_lower_bound?: number;
-    qasmEncoder: string;
-}
+import { BackendGraphData, Button, ErrorNote, Icon, JobProgress, Panel, describeError, iconPaths } from "./common";
 
 interface SidebarProps {
     isOpen: boolean;
@@ -18,34 +11,33 @@ interface SidebarProps {
     onGraphDataReceived: (data: BackendGraphData) => void;
 }
 
+type InputMode = "examples" | "custom" | "upload";
 
-const InputLabel = ({ title, children }: { title: string, children: React.ReactNode }) => (
-    <div className="">
-        <label className="block text-sm font-medium text-gray-700 mb-1">
-            {title}
-        </label>
-        {children}
-    </div>
-);
+const inputModes: { id: InputMode, label: string }[] = [
+    { id: "examples", label: "Examples" },
+    { id: "custom", label: "Custom" },
+    { id: "upload", label: "Upload" },
+];
 
-const exampleNames: Record<string, string> = {
-    shor: "Shor Code",
-    steane: "Steane Code",
-    "5_qubit": "5 Qubits Code",
-    r3x3: "Rot Surface (3x3)",
-    t2x2: "Toric 2x2",
-    t3x3: "Toric 3x3"
+const exampleCodes: Record<string, { name: string, n: number, k: number }> = {
+    steane: { name: "Steane code", n: 7, k: 1 },
+    "5_qubit": { name: "5-qubit code", n: 5, k: 1 },
+    shor: { name: "Shor code", n: 9, k: 1 },
+    r3x3: { name: "Rotated surface 3×3", n: 9, k: 1 },
+    t2x2: { name: "Toric 2×2", n: 8, k: 2 },
+    t3x3: { name: "Toric 3×3", n: 18, k: 2 },
 };
 
-const inputStyle = "mb-4 w-full text-sm p-2 border border-gray-300 rounded-md shadow-sm focus:border-blue-500";
-const buttonStyle = "w-full p-2 bg-blue-600 text-white rounded-md hover:bg-blue-700 transition";
-const secondaryButtonStyle = "p-2 bg-gray-300 text-gray-800 rounded-md hover:bg-gray-300 transition";
-const uploadButtonStyle = "w-full py-2 bg-gray-600 text-white rounded-md hover:bg-gray-700 transition flex items-center justify-center";
+const STABILIZER_PATTERN = /^[+-]?i?[IXYZ_]+$/;
+
+const inputStyle = "w-full rounded-lg border border-line bg-canvas px-3 py-2 text-sm text-ink placeholder:text-ink-faint focus:border-accent focus:outline-none";
+const helpStyle = "text-sm text-ink-soft";
 
 
 export default function Sidebar({ isOpen, onClose, onGraphDataReceived, onOpen }: SidebarProps) {
 
-    const [selectedExample, setSelectedExample] = useState<string>("");
+    const [inputMode, setInputMode] = useState<InputMode>("examples");
+    const [selectedExample, setSelectedExample] = useState<string>("steane");
     const [n, setN] = useState<string>("");
     const [k, setK] = useState<string>("");
     const [currentStep, setCurrentStep] = useState<number>(1);
@@ -59,7 +51,6 @@ export default function Sidebar({ isOpen, onClose, onGraphDataReceived, onOpen }
     const [stabilizerValues, setStabilizerValues] = useState<string[]>([]);
 
     const [isLoading, setIsLoading] = useState<boolean>(false);
-    const [progress, setProgress] = useState<number>(0);
     const [estimatedTime, setEstimatedTime] = useState<number | null>(null);
     const [currentJobId, setCurrentJobId] = useState<string | null>(null);
     const [validationError, setValidationError] = useState<string>("");
@@ -183,13 +174,6 @@ export default function Sidebar({ isOpen, onClose, onGraphDataReceived, onOpen }
         });
 
 
-        // const adjacency_list: number[][] = [];
-        // Riempiamo fino a maxId, gestendo eventuali ID mancanti come array vuoti
-        // for (let i = 0; i <= maxId; i++) {
-        //     const neighbors = adjMap.get(i);
-        //     adjacency_list.push(neighbors ? Array.from(neighbors).sort((a, b) => a - b) : []);
-        // }
-
         if (inputs.length === 0) {
             throw new Error("No input nodes found in the DOT file.");
         }
@@ -208,14 +192,10 @@ export default function Sidebar({ isOpen, onClose, onGraphDataReceived, onOpen }
         const reader = new FileReader();
         reader.onload = (e) => {
             const text = e.target?.result as string;
-            // console.log("DOT File Loaded:", text);
-            // alert("DOT file loaded (Parsing logic to be implemented)");
             if (!text) { return }
 
             try {
-                console.log("DOT File Loaded...");
                 const { inputs, adjacency_list } = parseDotToGraph(text);
-                console.log("Parsed Graph Data:", { inputs, adjacency_list });
 
                 setN((adjacency_list.size - inputs.length).toString())
                 setK((inputs.length).toString())
@@ -241,7 +221,7 @@ export default function Sidebar({ isOpen, onClose, onGraphDataReceived, onOpen }
 
         if (selectedExample === "") {
             if (numN <= numK || numN <= 0 || numK <= 0) {
-                setValidationError("Insert n > k, they have to be positive integers.");
+                setValidationError("Enter positive whole numbers with n greater than k.");
                 return;
             }
             stabilizerCount = numN - numK;
@@ -262,6 +242,12 @@ export default function Sidebar({ isOpen, onClose, onGraphDataReceived, onOpen }
     };
 
 
+    const handleModeChange = (mode: InputMode) => {
+        if (mode === inputMode) return;
+        setInputMode(mode);
+        setSelectedExample(mode === "examples" ? "steane" : "");
+        setValidationError("");
+    };
     const handleExampleChange = (value: string) => {
         setSelectedExample(value);
         if (validationError) setValidationError("");
@@ -294,39 +280,34 @@ export default function Sidebar({ isOpen, onClose, onGraphDataReceived, onOpen }
                     method: "POST"
                 });
             } catch (e) {
-                console.error("Errore cancellazione job:", e);
+                console.error("Could not cancel the job:", e);
             }
         }
 
         setIsLoading(false);
-        setProgress(0);
         setCurrentJobId(null);
     };
 
 
     const handleSubmitToBackend = async () => {
 
-
-        console.log(stabilizerValues)
         if (selectedExample === "" && randomStabilizers === false && !uploadedDot) {
             if (stabilizerValues.length === 0 || stabilizerValues.some(s => s.trim() === "")) {
-                setValidationError("Please fill every stabilizer before submitting.");
+                setValidationError("Please fill in every stabilizer before generating.");
                 return;
             }
-            setValidationError("");
+            const invalidIndex = stabilizerValues.findIndex(s =>
+                !STABILIZER_PATTERN.test(s.trim()) || s.trim().replace(/^[+-]?i?/, "").length !== numN
+            );
+            if (invalidIndex !== -1) {
+                setValidationError(`S${invalidIndex + 1} must be ${numN} characters long and use only I, X, Y and Z.`);
+                return;
+            }
         }
-
-
+        setValidationError("");
 
         setIsLoading(true);
-        setProgress(0);
-
-        const progressTimer = setInterval(() => {
-            setProgress((old) => {
-                if (old >= 90) return 90;
-                return Math.min(old + Math.random() * 5, 90);
-            });
-        }, 100);
+        setEstimatedTime(null);
 
         let dataToSend;
 
@@ -343,13 +324,18 @@ export default function Sidebar({ isOpen, onClose, onGraphDataReceived, onOpen }
                 n: numN,
                 k: numK,
                 random: randomStabilizers,
-                stabilizers: (selectedExample === "" || randomStabilizers === false) ? stabilizerValues : []
+                stabilizers: (selectedExample === "" || randomStabilizers === false) ? stabilizerValues.map(s => s.trim()) : []
             };
 
         }
-        console.log("Invio dati al backend:", JSON.stringify(dataToSend));
 
-
+        const failWith = (message: string) => {
+            if (pollingIntervalRef.current) clearInterval(pollingIntervalRef.current);
+            pollingIntervalRef.current = null;
+            setValidationError(message);
+            setIsLoading(false);
+            setCurrentJobId(null);
+        };
 
         try {
 
@@ -372,80 +358,39 @@ export default function Sidebar({ isOpen, onClose, onGraphDataReceived, onOpen }
             const startResult = await startResponse.json();
 
             if (!startResult.success || !startResult.job_id) {
-                throw new Error(startResult.error || "Errore avvio job");
+                failWith(startResult.error || "The job could not be started.");
+                return;
             }
 
             const jobId = startResult.job_id;
             setCurrentJobId(jobId);
             setEstimatedTime(startResult.estimated_time || null);
 
-            console.log("Job avviato con ID:", jobId);
-
             pollingIntervalRef.current = setInterval(async () => {
                 try {
                     const statusResponse = await fetch(`${BACKEND_URL}/status/${jobId}`);
                     const statusResult = await statusResponse.json();
 
-                    console.log("Job status:", statusResult);
-
-                    if (statusResult.success && statusResult.status != "processing") {
-                        // console.log("here")
+                    if (statusResult.success === false) {
+                        failWith(statusResult.error || "The computation failed.");
+                    } else if (statusResult.status != "processing") {
                         clearInterval(pollingIntervalRef.current!);
-                        clearInterval(progressTimer);
                         pollingIntervalRef.current = null;
-
-                        setProgress(100);
-                        setTimeout(() => {
-                            onGraphDataReceived(statusResult.data);
-                            setIsLoading(false);
-                            setProgress(0);
-                            setCurrentJobId(null);
-                        }, 500);
-                    }
-                    else if (statusResult.success === false) {
-                        throw new Error(statusResult.error || "Errore durante il calcolo");
+                        onGraphDataReceived(statusResult.data);
+                        setIsLoading(false);
+                        setCurrentJobId(null);
                     }
 
-                } catch (pollError: any) {
-                    console.error("Errore polling:", pollError);
-                    clearInterval(pollingIntervalRef.current!);
-                    clearInterval(progressTimer);
-                    alert("Errore: " + pollError.message);
-                    setIsLoading(false);
-                    setProgress(0);
+                } catch (pollError) {
+                    console.error("Polling error:", pollError);
+                    failWith(describeError(pollError));
                 }
             }, 500);
 
-        } catch (error: any) {
-            console.error("Errore connessione:", error);
-            alert("Impossibile avviare il calcolo: " + error.message);
-            clearInterval(progressTimer);
-            setIsLoading(false);
-            setProgress(0);
+        } catch (error) {
+            console.error("Connection error:", error);
+            failWith(describeError(error));
         }
-    };
-
-    const renderCustomStabilizers = () => {
-        if (stabilizerValues.length === 0) {
-            return (
-                <p className="text-sm text-gray-500">
-                    Nessuno stabilizzatore da inserire.
-                </p>
-            );
-        }
-
-        return stabilizerValues.map((value, index) => (
-            <div key={index} className="flex items-center space-x-2 mb-2">
-                <label className="text-sm text-gray-600">S<sub>{index + 1}</sub>:</label>
-                <input
-                    type="text"
-                    className={inputStyle}
-                    placeholder={`Stabilizer ${index + 1}`}
-                    value={value}
-                    onChange={(e) => handleStabilizerChange(index, e.target.value)}
-                />
-            </div>
-        ));
     };
 
     const handleGoBack = () => {
@@ -455,355 +400,186 @@ export default function Sidebar({ isOpen, onClose, onGraphDataReceived, onOpen }
         setUploadedStabilizers(false);
         setUploadedDot(false);
         setStabilizerValues([]);
-
     }
 
+    const renderGenerate = () => (
+        <div className="mt-4 flex flex-col gap-3">
+            {validationError && <ErrorNote>{validationError}</ErrorNote>}
+            {isLoading ? (
+                <JobProgress
+                    label={estimatedTime && estimatedTime >= 1 ? `Generating, about ${Math.round(estimatedTime)}s.` : "Generating..."}
+                    onStop={handleStop}
+                />
+            ) : (
+                <Button onClick={handleSubmitToBackend} className="w-full">
+                    Generate graph
+                </Button>
+            )}
+        </div>
+    );
+
     const renderStabilizerStep = () => {
-        let content;
-        let showGenerateButton = true;
+        let title;
+        let description;
 
         if (randomStabilizers) {
-            content = (
-                <div>
-                    <h3 className="text-lg font-medium">Random code</h3>
-                    <p className="text-sm text-gray-600 mt-2">
-                        {`Click "Generate graph" to generate a random stabilizer code with parameters n = ${numN} and k = ${numK}.`}
-                    </p>
-                </div>
-            );
+            title = "Random code";
+            description = "A random stabilizer code will be generated with these parameters.";
         } else if (uploadedStabilizers) {
-            content = (
-                <div>
-                    <h3 className="text-lg font-medium">Uploaded stabilizers</h3>
-                    <p className="text-sm text-gray-600 mt-2">
-                        {`Click "Generate graph" to generate the stabilizer code:  n = ${numN} and k = ${numK}.`}
-                    </p>
-                </div>
-            );
+            title = "Uploaded stabilizers";
+            description = `Loaded ${stabilizerValues.length} stabilizers from your file.`;
         } else if (uploadedDot) {
-            content = (
-                <div>
-                    <h3 className="text-lg font-medium">Uploaded DOT</h3>
-                    <p className="text-sm text-gray-600 mt-2">
-                        {`Click "Generate graph" to generate the stabilizer code:  n = ${numN} and k = ${numK}.`}
-                    </p>
-                </div>
-            );
-
-        } else if (selectedExample) {
-            content = (
-                <div>
-                    <h3 className="text-lg font-medium">{`${exampleNames[selectedExample]}`}</h3>
-                    <p className="text-sm text-gray-600 mt-2">
-                        {` Click "generate graph" to generate the uiversal representation of the ${exampleNames[selectedExample]}.`}
-                    </p>
-                </div>
-            );
+            title = "Uploaded DOT graph";
+            description = "The code will be computed from your graph.";
         } else {
-            content = (
-                <>
-                    <p className="mb-6">
-                        Insert the code stabilizers:
-                    </p>
-                    <div>
-                        <div className="mt-4 space-y-2">
-                            {renderCustomStabilizers()}
-                        </div>
-                    </div>
-                </>
-            );
-            if (stabilizerValues.length === 0) showGenerateButton = false;
-
+            title = "Enter the stabilizers";
+            description = `Use the letters I, X, Y and Z, with ${numN} per stabilizer.`;
         }
+
+        const isManualEntry = !randomStabilizers && !uploadedStabilizers && !uploadedDot;
+
         return (
             <>
-                {content}
+                <Button variant="ghost" onClick={handleGoBack} disabled={isLoading} className="-ml-2 mb-3 !py-1">
+                    <Icon path={iconPaths.chevronLeft} />
+                    Back
+                </Button>
 
-                {showGenerateButton && (
-                    <div className="mt-8">
-                        <button
-                            onClick={handleSubmitToBackend}
-                            className={`${buttonStyle} relative overflow-hidden`}
-                            disabled={isLoading}
-                        >
-                            <span className={isLoading ? "opacity-0" : "opacity-100"}>
-                                Generate graph
-                            </span>
-                            {isLoading && (
-                                <span className="absolute inset-0 flex items-center justify-center">
-                                    Generating...
-                                </span>
-                            )}
-                        </button>
-                        <div className='flex justify-between '>
-                            {isLoading && estimatedTime && (
-                                <div className="flex items-center justify-center gap-2 mt-4 p-2 bg-white/10 rounded-md">
-                                    <svg className="animate-spin h-5 w-5 text-blue-400" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
-                                        <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
-                                        <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
-                                    </svg>
-                                    <p className="text-sm font-medium text-gray-300">
-                                        Generating
-                                    </p>
-                                </div>
-                            )}
-                            {isLoading && (
-                                <>
-                                    {/* <div className="w-full bg-gray-200 rounded-full h-2.5 mt-3 overflow-hidden">
-                                    <div
-                                        className="bg-blue-400 h-2.5 rounded-full transition-all duration-300 ease-out"
-                                        style={{ width: `${progress}%` }}
-                                    ></div>
-                                </div> */}
+                <h3 className="font-medium">{title}</h3>
+                <p className={`${helpStyle} mt-1`}>{description}</p>
+                <p className="mt-3 font-mono text-sm text-ink-soft">n = {numN}, k = {numK}</p>
 
-                                    <div className="flex justify-center mt-2">
-                                        <button
-                                            onClick={handleStop}
-                                            className="p-2 text-red-500 hover:bg-red-100 rounded-full transition-colors"
-                                            title="Stop generation"
-                                        >
-                                            <svg xmlns="http://www.w3.org/2000/svg" className="h-6 w-6" viewBox="0 0 24 24" fill="currentColor">
-                                                <path d="M6 6h12v12H6z" />
-                                            </svg>
-                                        </button>
-                                    </div>
-
-
-                                </>
-                            )}
-                        </div>
-
+                {isManualEntry && (
+                    <div className="mt-4 flex flex-col gap-2">
+                        {stabilizerValues.map((value, index) => (
+                            <div key={index} className="flex items-center gap-2">
+                                <label htmlFor={`stabilizer-${index}`} className="w-8 shrink-0 font-mono text-sm text-ink-soft">
+                                    S<sub>{index + 1}</sub>
+                                </label>
+                                <input
+                                    id={`stabilizer-${index}`}
+                                    type="text"
+                                    spellCheck={false}
+                                    autoComplete="off"
+                                    autoCapitalize="characters"
+                                    className={`${inputStyle} font-mono`}
+                                    placeholder={"I".repeat(Math.min(numN, 24))}
+                                    value={value}
+                                    onChange={(e) => handleStabilizerChange(index, e.target.value)}
+                                />
+                            </div>
+                        ))}
                     </div>
                 )}
+
+                {renderGenerate()}
             </>
         );
     };
 
+    const renderExamples = () => (
+        <>
+            <div className="flex flex-col gap-1.5" role="radiogroup" aria-label="Example codes">
+                {Object.entries(exampleCodes).map(([id, code]) => {
+                    const selected = selectedExample === id;
+                    return (
+                        <button
+                            key={id}
+                            type="button"
+                            role="radio"
+                            aria-checked={selected}
+                            disabled={isLoading}
+                            onClick={() => handleExampleChange(id)}
+                            className={`flex cursor-pointer items-center justify-between gap-3 rounded-lg border px-3 py-2 text-left text-sm transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent disabled:cursor-not-allowed ${selected ? "border-accent bg-accent/10 text-ink" : "border-line text-ink-soft hover:border-ink-faint hover:text-ink"}`}
+                        >
+                            <span>{code.name}</span>
+                            <span className="font-mono text-xs text-ink-faint">[[{code.n}, {code.k}]]</span>
+                        </button>
+                    );
+                })}
+            </div>
+            {renderGenerate()}
+        </>
+    );
+
+    const renderCustom = () => (
+        <>
+            <div className="grid grid-cols-2 gap-3">
+                <div>
+                    <label htmlFor="code-n" className="mb-1 block text-sm text-ink-soft">Physical qubits n</label>
+                    <input id="code-n" type="number" min="1" value={n} onChange={(e) => handleNChange(e.target.value)} placeholder="7" className={`${inputStyle} font-mono`} />
+                </div>
+                <div>
+                    <label htmlFor="code-k" className="mb-1 block text-sm text-ink-soft">Logical qubits k</label>
+                    <input id="code-k" type="number" min="1" value={k} onChange={(e) => handleKChange(e.target.value)} placeholder="1" className={`${inputStyle} font-mono`} />
+                </div>
+            </div>
+
+            {validationError && <div className="mt-3"><ErrorNote>{validationError}</ErrorNote></div>}
+
+            <div className="mt-4 flex flex-col gap-2">
+                <Button onClick={() => handleNextClick(false)}>
+                    Enter stabilizers
+                    <Icon path={iconPaths.chevronRight} />
+                </Button>
+                <Button variant="secondary" onClick={() => handleNextClick(true)}>
+                    Generate a random code
+                </Button>
+            </div>
+        </>
+    );
+
+    const uploadTileStyle = "flex w-full cursor-pointer flex-col items-center gap-1 rounded-lg border border-dashed border-ink-faint/60 px-3 py-4 text-center transition-colors hover:border-accent hover:bg-accent/5 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent";
+
+    const renderUpload = () => (
+        <>
+            <div className="flex flex-col gap-3">
+                <button onClick={triggerStabilizerUpload} className={uploadTileStyle} type="button">
+                    <Icon path={iconPaths.upload} className="h-5 w-5 text-ink-soft" />
+                    <span className="text-sm font-medium">Stabilizer file</span>
+                    <span className="text-xs text-ink-faint">One stabilizer per line, such as XZZXI</span>
+                </button>
+                <input type="file" ref={stabilizerFileInputRef} className="hidden" onChange={handleStabilizerFileUpload} />
+
+                <button onClick={triggerDotUpload} className={uploadTileStyle} type="button">
+                    <Icon path={iconPaths.upload} className="h-5 w-5 text-ink-soft" />
+                    <span className="text-sm font-medium">DOT graph file</span>
+                    <span className="text-xs text-ink-faint">
+                        Label input nodes with <code className="font-mono">label=&quot;input&quot;</code>
+                    </span>
+                </button>
+                <input type="file" accept=".dot" ref={dotFileInputRef} className="hidden" onChange={handleDotFileUpload} />
+            </div>
+
+            {validationError && <div className="mt-3"><ErrorNote>{validationError}</ErrorNote></div>}
+        </>
+    );
 
     return (
-        <>
-
-            {!isOpen && (
-                <button
-                    onClick={onOpen}
-                    className="
-                        fixed top-1/5 left-0 
-                        z-20 
-                        text-white
-                        bg-primary
-                        p-2 py-4 
-                        rounded-md 
-                        shadow-lg 
-                        transition-all
-                        opacity-75 hover:opacity-100
-                    "
-                >
-                    <svg
-                        xmlns="http://www.w3.org/2000/svg"
-                        className="h-6 w-6"
-                        fill="none"
-                        viewBox="0 0 24 24"
-                        stroke="currentColor"
-                        strokeWidth={2}
-                    >
-                        <path
-                            strokeLinecap="round"
-                            strokeLinejoin="round"
-                            d="M13 5l7 7-7 7M5 5l7 7-7 7"
-                        />
-                    </svg>
-                </button>
-            )}
-
-            <div
-                className={`
-                    absolute margin-inline: auto lg:left-0 lg:top-35 lg:bottom-10 w-85 bg-primary shadow-md z-50 h-auto
-                    transform transition-transform duration-300 ease-in-out text-white rounded-lg
-                    ${isOpen ? 'translate-x-5' : '-translate-x-full'}
-                `}
-            >
-                <div className="flex flex-col items-start h-full overflow-y-auto">
-                    <button
-                        onClick={onClose}
-                        className="hidden lg:display:block opacity-10 mb-6 px-5 pt-5"
-                    >
-                        <svg
-                            xmlns="http://www.w3.org/2000/svg"
-                            width="24"
-                            height="24"
-                            fill="none"
-                            viewBox="0 0 24 24"
-                            stroke="currentColor"
-                            strokeWidth="2"
-                        >
-                            <g transform="scale(-1,1) translate(-24,0)">
-                                <path
-                                    strokeLinecap="round"
-                                    strokeLinejoin="round"
-                                    d="M13 5l7 7-7 7M5 5l7 7-7 7"
-                                />
-                            </g>
-                        </svg>
-
-                    </button>
-
-                    <div className="flex py-5 flex-1 gap-12 overflow-x-hidden overflow-y-scroll flex-col justify-between">
-
-                        <div className="flex-1 flex flex-col ">
-                            <h2 className="text-xl px-6 mb-6 font-bold">Insert code stabilizers</h2>
-                            <div className={`
-                            flex-1
-                            items-start
-                            flex w-[200%] 
-                            transition-transform duration-300 ease-in-out
-                            ${currentStep === 1 ? 'translate-x-0' : '-translate-x-1/2'}
-                            `}>
-
-                                <div className="w-1/2 flex-shrink h-full flex flex-col px-6 justify-start gap-1">
-
-                                    <p className="mb-4">
-                                        Select an example code or insert custom parameters:
-                                    </p>
-
-                                    <InputLabel title="Load examples">
-                                        <select
-                                            value={selectedExample}
-                                            onChange={(e) => handleExampleChange(e.target.value)}
-                                            className={inputStyle}
-                                        >
-                                            <option value="">Custom code</option>
-                                            <option value="shor">Shor Code</option>
-                                            <option value="steane">Steane Code</option>
-                                            <option value="5_qubit">5 Qubits Code</option>
-                                            <option value="r3x3">rotated_surface_3x3</option>
-                                            <option value="t2x2">toric_code_2x2</option>
-                                            <option value="t3x3">toric_code_3x3</option>
-                                            {/* <option value="custom">Custom</option> */}
-                                        </select>
-                                    </InputLabel>
-
-                                    {selectedExample === "" || selectedExample === "custom" ? (
-                                        <>
-                                            <InputLabel title="Value 'n' (physical qubits)">
-                                                <input
-                                                    type="number"
-                                                    min="1"
-                                                    value={n}
-                                                    onChange={(e) => handleNChange(e.target.value)}
-                                                    placeholder="es. 7"
-                                                    className={` ${inputStyle}`}
-                                                />
-                                            </InputLabel>
-
-                                            <InputLabel title="Value 'k' (logical qubits)">
-                                                <input
-                                                    type="number"
-                                                    min="0"
-                                                    value={k}
-                                                    onChange={(e) => handleKChange(e.target.value)}
-                                                    placeholder="es. 1"
-                                                    className={inputStyle}
-                                                />
-                                            </InputLabel>
-                                        </>
-                                    ) : (
-
-                                        <p className="text-sm text-gray-600">
-                                            The values 'n' and 'k' for the {exampleNames[selectedExample]} are predefined.
-                                        </p>
-                                    )}
-
-                                    {validationError && (
-                                        <p className="text-red-600 text-sm mt-6">
-                                            {validationError}
-                                        </p>
-                                    )
-                                    }
-
-                                    <button onClick={() => handleNextClick(false)} className={`${buttonStyle} mt-6`}>
-                                        Next &rarr;
-                                    </button>
-
-
-                                    {(selectedExample === "") && (
-                                        <>
-                                            <button onClick={() => handleNextClick(true)} className={`${buttonStyle} mt-6`}>
-                                                Generate random &rarr;
-                                            </button>
-
-                                            <div className="overflow-x-hidden">
-                                                <button
-                                                    onClick={triggerStabilizerUpload}
-                                                    className={`${uploadButtonStyle} mt-6`}
-                                                    type="button"
-                                                >
-                                                    <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                                                        <path strokeLinecap="round" strokeLinejoin="round" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-8l-4-4m0 0L8 8m4-4v12" />
-                                                    </svg>
-                                                    Upload stabilizers
-                                                </button>
-                                                <input
-                                                    type="file"
-                                                    accept=""
-                                                    ref={stabilizerFileInputRef}
-                                                    className='hidden'
-                                                    onChange={handleStabilizerFileUpload}
-                                                />
-                                                <p className="text-xs text-gray-400 mt-2 text-center">
-                                                    File should contain one stabilizer per line (e.g., XZZX)
-                                                </p>
-                                            </div>
-
-                                            <div className="">
-
-                                                <button
-                                                    onClick={triggerDotUpload}
-                                                    className={`${uploadButtonStyle} mt-6`}
-                                                    type="button"
-                                                >
-                                                    <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                                                        <path strokeLinecap="round" strokeLinejoin="round" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-8l-4-4m0 0L8 8m4-4v12" />
-                                                    </svg>
-                                                    Upload DOT file
-                                                </button>
-                                                <input
-                                                    type="file"
-                                                    accept=".dot"
-                                                    ref={dotFileInputRef}
-                                                    className='hidden'
-                                                    onChange={handleDotFileUpload}
-                                                />
-                                                <p className="text-xs text-gray-400 text-center mt-2">
-                                                    File should contain a valid DOT representation of the graph. Input nodes must be labeled with label="input".
-                                                </p>
-                                            </div>
-                                        </>
-                                    )
-                                    }
-
-
-                                </div>
-                                <div className="w-1/2 px-6 flex-shrink-0">
-                                    <button onClick={() => handleGoBack()} className={`${secondaryButtonStyle} text-sm font-semibold mb-4 text-left`}>
-                                        &larr; Back
-                                    </button>
-
-                                    {renderStabilizerStep()}
-
-                                    {validationError && (
-                                        <p className="text-red-600 text-sm mt-2">
-                                            {validationError}
-                                        </p>
-                                    )
-                                    }
-                                </div>
-
-                            </div>
-                        </div>
+        <Panel side="left" title="Load a code" openLabel="Load a code" isOpen={isOpen} onOpen={onOpen} onClose={onClose}>
+            {currentStep === 1 ? (
+                <>
+                    <div className="mb-4 grid grid-cols-3 gap-1 rounded-lg bg-canvas p-1" role="tablist" aria-label="Code source">
+                        {inputModes.map((mode) => (
+                            <button
+                                key={mode.id}
+                                type="button"
+                                role="tab"
+                                aria-selected={inputMode === mode.id}
+                                disabled={isLoading}
+                                onClick={() => handleModeChange(mode.id)}
+                                className={`cursor-pointer rounded-md px-2 py-1.5 text-sm font-medium transition-colors focus-visible:outline-2 focus-visible:outline-accent disabled:cursor-not-allowed ${inputMode === mode.id ? "bg-surface-raised text-ink shadow-sm" : "text-ink-faint hover:text-ink"}`}
+                            >
+                                {mode.label}
+                            </button>
+                        ))}
                     </div>
-                </div>
-            </div >
 
-        </>
+                    {inputMode === "examples" && renderExamples()}
+                    {inputMode === "custom" && renderCustom()}
+                    {inputMode === "upload" && renderUpload()}
+                </>
+            ) : renderStabilizerStep()}
+        </Panel>
     );
 }

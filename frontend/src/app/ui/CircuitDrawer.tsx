@@ -1,6 +1,7 @@
 "use client";
 
-import React, { useMemo } from "react";
+import React, { useEffect, useMemo } from "react";
+import { BackendGraphData, Button, Icon, iconPaths } from "./common";
 
 interface Gate {
     type: string;
@@ -62,7 +63,7 @@ const parseQASM = (qasm: string, inputCount: number): ParsedCircuit => {
 
     const initialStates: string[] = Array.from(
         { length: numQubits },
-        (_, qubit) => qubit < inputCount ? "|in>" : "|0>"
+        (_, qubit) => qubit < inputCount ? "|in⟩" : "|0⟩"
     );
     const touched = Array(numQubits).fill(false);
     const visualGates: Gate[] = [];
@@ -76,7 +77,7 @@ const parseQASM = (qasm: string, inputCount: number): ParsedCircuit => {
             !touched[gate.qubits[0]];
 
         if (isInitialAncillaHadamard) {
-            initialStates[gate.qubits[0]] = "|+>";
+            initialStates[gate.qubits[0]] = "|+⟩";
             touched[gate.qubits[0]] = true;
             return;
         }
@@ -87,18 +88,29 @@ const parseQASM = (qasm: string, inputCount: number): ParsedCircuit => {
         });
     });
 
-    const columns: Gate[][] = visualGates.map(g => [g]);
+    // Gates share a column when the wires they span do not overlap, which keeps the circuit compact.
+    const nextFreeColumn = Array(numQubits).fill(0);
+    const columns: Gate[][] = [];
+
+    visualGates.forEach(gate => {
+        const wires = [...gate.qubits, ...(gate.controls || [])];
+        const top = Math.min(...wires);
+        const bottom = Math.max(...wires);
+
+        let column = 0;
+        for (let wire = top; wire <= bottom; wire++) {
+            column = Math.max(column, nextFreeColumn[wire]);
+        }
+        for (let wire = top; wire <= bottom; wire++) {
+            nextFreeColumn[wire] = column + 1;
+        }
+
+        if (!columns[column]) columns[column] = [];
+        columns[column].push(gate);
+    });
 
     return { numQubits, columns, initialStates };
 };
-interface BackendGraphData {
-    inputs: number[];
-    adjacency_list: number[][];
-    distance_upper_bound: number;
-    distance_lower_bound?: number;
-    qasmEncoder: string;
-}
-
 interface CircuitDrawerProps {
     isOpen: boolean;
     onClose: () => void;
@@ -117,11 +129,28 @@ export default function CircuitDrawer({ isOpen, onClose, qasmData }: CircuitDraw
         }
     }, [qasmData]);
 
+    useEffect(() => {
+        if (!isOpen) return;
+        const closeOnEscape = (event: KeyboardEvent) => {
+            if (event.key === "Escape") onClose();
+        };
+        window.addEventListener("keydown", closeOnEscape);
+        return () => window.removeEventListener("keydown", closeOnEscape);
+    }, [isOpen, onClose]);
+
     const ROW_H = 40;
     const COL_W = 40;
-    const START_X = 95;
-    const START_Y = 40;
+    const START_X = 110;
+    const START_Y = 28;
 
+    const gateCount = circuit ? circuit.columns.reduce((total, col) => total + col.length, 0) : 0;
+
+    const gateColor = (type: string) => {
+        if (type === 'X') return 'var(--color-gate-x)';
+        if (type === 'H') return 'var(--color-accent)';
+        if (type === 'M') return 'var(--color-danger)';
+        return 'var(--color-gate-z)';
+    };
 
     const handleDownload = () => {
         if (!qasmData?.qasmEncoder) return;
@@ -140,168 +169,111 @@ export default function CircuitDrawer({ isOpen, onClose, qasmData }: CircuitDraw
         <>
             <div
                 onClick={onClose}
-                className={`
-        fixed inset-0 bg-black/50 z-40 transition-opacity duration-300
-        ${isOpen ? 'opacity-100 pointer-events-auto' : 'opacity-0 pointer-events-none'}
-    `}
+                className={`fixed inset-0 z-40 bg-black/60 transition-opacity duration-300 motion-reduce:transition-none ${isOpen ? 'opacity-100' : 'pointer-events-none opacity-0'}`}
             />
 
             <div
+                role="dialog"
+                aria-modal="true"
+                aria-label="Encoder circuit"
                 className={`
-                    fixed bottom-0 left-0 right-0 
-                    h-[500px] md:h-[600px] 
-                    bg-secondary text-white 
-                    shadow-[0_-4px_20px_rgba(0,0,0,0.5)] 
-                    z-50 
-                    rounded-t-2xl
-                    flex flex-col border-t border-white/10
-                    transform transition-transform duration-300 ease-in-out
-                    ${isOpen ? 'translate-y-0' : 'translate-y-full'}
+                    fixed right-0 bottom-0 left-0 z-50 flex h-[75dvh] flex-col
+                    rounded-t-2xl border-t border-line bg-surface shadow-2xl shadow-black/60
+                    transition-[transform,visibility] duration-300 ease-out motion-reduce:transition-none
+                    ${isOpen ? 'visible translate-y-0' : 'invisible translate-y-full'}
                 `}
             >
-                <div className="flex items-center justify-between px-6 py-4 border-b border-white/10 shrink-0 bg-primary rounded-t-2xl">
-                    <h2 className="text-xl font-semibold font-mono">Quantum Circuit</h2>
+                <div className="flex shrink-0 items-center justify-between gap-4 border-b border-line py-3 pr-3 pl-5">
+                    <div className="min-w-0">
+                        <h2 className="font-semibold">Encoder circuit</h2>
+                        {circuit && circuit.numQubits > 0 && (
+                            <p className="font-mono text-xs text-ink-faint">{circuit.numQubits} qubits, {gateCount} gates</p>
+                        )}
+                    </div>
 
-                    <div className="flex items-center gap-2">
-                        <button
-                            onClick={handleDownload}
-                            disabled={!qasmData}
-                            className="p-2 hover:bg-white/10 rounded-full transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
-                            title="Download QASM"
-                        >
-                            <svg xmlns="http://www.w3.org/2000/svg" className="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                                <path strokeLinecap="round" strokeLinejoin="round" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" />
-                            </svg>
-                        </button>
-
-                        {/* Close Button */}
-                        <button
-                            onClick={onClose}
-                            className="p-2 hover:bg-white/10 rounded-full transition-colors"
-                        >
-                            <svg xmlns="http://www.w3.org/2000/svg" className="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                                <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
-                            </svg>
-                        </button>
+                    <div className="flex shrink-0 items-center gap-1">
+                        <Button variant="secondary" onClick={handleDownload} disabled={!qasmData}>
+                            <Icon path={iconPaths.download} />
+                            <span className="hidden sm:inline">Download QASM</span>
+                        </Button>
+                        <Button variant="ghost" onClick={onClose} aria-label="Close circuit" title="Close (Esc)">
+                            <Icon path={iconPaths.close} className="h-5 w-5" />
+                        </Button>
                     </div>
                 </div>
 
-                {/* Circuit Visualization Area */}
-                <div className="flex-1 overflow-auto p-8 relative bg-[#0B1221]">
+                <div className="flex-1 overflow-auto bg-canvas p-6">
 
                     {!circuit || circuit.numQubits === 0 ? (
-                        <div className="text-gray-400 text-center mt-10">
-                            {qasmData ? "Unable to parse circuit." : "No QASM data available."}
-                        </div>
+                        <p className="mt-10 text-center text-sm text-ink-soft">
+                            {qasmData ? "Unable to parse this circuit." : "No circuit available."}
+                        </p>
                     ) : (
                         <svg
-                            width={Math.max(800, START_X + circuit.columns.length * COL_W + 100)}
-                            height={Math.max(200, START_Y + circuit.numQubits * ROW_H)}
-                            className="mx-auto"
+                            width={START_X + circuit.columns.length * COL_W + 40}
+                            height={START_Y * 2 + (circuit.numQubits - 1) * ROW_H}
+                            className="mx-auto font-mono"
                         >
-                            {/* 1. Disegna le linee dei Qubit (Wires) */}
                             {Array.from({ length: circuit.numQubits }).map((_, i) => (
                                 <g key={`wire-${i}`}>
-                                    <text
-                                        x={10}
-                                        y={START_Y + i * ROW_H + 5}
-                                        fill="#9CA3AF"
-                                        fontSize="14"
-                                        fontFamily="monospace"
-                                    >
-                                        {`q[${i}] ${circuit.initialStates[i]}`}
+                                    <text x={START_X - 12} y={START_Y + i * ROW_H + 4} fontSize="13" textAnchor="end" fill="var(--color-ink-soft)">
+                                        <tspan fill="var(--color-ink-faint)">{`q${i} `}</tspan>
+                                        {circuit.initialStates[i]}
                                     </text>
                                     <line
                                         x1={START_X}
                                         y1={START_Y + i * ROW_H}
                                         x2={START_X + circuit.columns.length * COL_W + 40}
                                         y2={START_Y + i * ROW_H}
-                                        stroke="#4B5563"
-                                        strokeWidth="2"
+                                        stroke="var(--color-line)"
+                                        strokeWidth="1.5"
                                     />
                                 </g>
                             ))}
 
-                            {/* 2. Disegna le porte */}
                             {circuit.columns.map((col, colIdx) => {
                                 const x = START_X + colIdx * COL_W + (COL_W / 2);
 
                                 return col.map((gate, gateIdx) => {
                                     const y = START_Y + gate.qubits[0] * ROW_H;
+                                    const color = gateColor(gate.type);
 
-                                    // --- Porte a singolo Qubit ---
                                     if (!gate.controls) {
-                                        if (gate.type === 'M') {
-                                            return (
-                                                <g key={`gate-${colIdx}-${gateIdx}`}>
-                                                    <rect
-                                                        x={x - 15} y={y - 15} width={30} height={30}
-                                                        fill="#1F2937" stroke="#F87171" strokeWidth="2" rx="4"
-                                                    />
-                                                    <text x={x} y={y + 5} textAnchor="middle" fill="#F87171" fontSize="12" fontWeight="bold">M</text>
-                                                </g>
-                                            );
-                                        } else {
-                                            const color = gate.type === 'X' ? '#34D399' : gate.type === 'H' ? '#60A5FA' : '#A78BFA';
-                                            return (
-                                                <g key={`gate-${colIdx}-${gateIdx}`}>
-                                                    <rect
-                                                        x={x - 15} y={y - 15} width={30} height={30}
-                                                        fill="#1F2937" stroke={color} strokeWidth="2" rx="4"
-                                                    />
-                                                    <text x={x} y={y + 5} textAnchor="middle" fill={color} fontSize="14" fontWeight="bold">{gate.type}</text>
-                                                </g>
-                                            );
-                                        }
-                                    }
-
-                                    // --- Porte Controllate (CX, CZ) ---
-                                    if (gate.controls) {
-                                        const yControl = START_Y + gate.controls[0] * ROW_H;
-                                        const yTarget = y;
-
                                         return (
-                                            <g key={`cgate-${colIdx}-${gateIdx}`}>
-                                                {/* Linea verticale di collegamento */}
-                                                <line x1={x} y1={yControl} x2={x} y2={yTarget} stroke="#9CA3AF" strokeWidth="2" />
-
-                                                {/* Pallino di controllo (Controllo) */}
-                                                <circle cx={x} cy={yControl} r={6} fill="#9CA3AF" />
-
-                                                {/* Target Visualization */}
-                                                {gate.type === 'X' ? (
-                                                    // CNOT: Cerchio con +
-                                                    <g>
-                                                        <circle cx={x} cy={yTarget} r={12} fill="#1F2937" stroke="#9CA3AF" strokeWidth="2" />
-                                                        <line x1={x} y1={yTarget - 8} x2={x} y2={yTarget + 8} stroke="#9CA3AF" strokeWidth="2" />
-                                                        <line x1={x - 8} y1={yTarget} x2={x + 8} y2={yTarget} stroke="#9CA3AF" strokeWidth="2" />
-                                                    </g>
-                                                ) : gate.type === 'Z' ? (
-                                                    // CZ: Altro pallino (Simmetrico)
-                                                    <circle cx={x} cy={yTarget} r={6} fill="#9CA3AF" />
-                                                ) : (
-                                                    // Altre controllate generiche: Box
-                                                    <g>
-                                                        <rect
-                                                            x={x - 15} y={yTarget - 15} width={30} height={30}
-                                                            fill="#1F2937" stroke="#A78BFA" strokeWidth="2" rx="4"
-                                                        />
-                                                        <text x={x} y={yTarget + 5} textAnchor="middle" fill="#A78BFA" fontSize="12" fontWeight="bold">{gate.type}</text>
-                                                    </g>
-                                                )}
+                                            <g key={`gate-${colIdx}-${gateIdx}`}>
+                                                <rect x={x - 14} y={y - 14} width={28} height={28} fill="var(--color-surface-raised)" stroke={color} strokeWidth="1.5" rx="5" />
+                                                <text x={x} y={y + 5} textAnchor="middle" fill={color} fontSize="13" fontWeight="600">{gate.type}</text>
                                             </g>
                                         );
                                     }
-                                    return null;
+
+                                    const yControl = START_Y + gate.controls[0] * ROW_H;
+
+                                    return (
+                                        <g key={`cgate-${colIdx}-${gateIdx}`}>
+                                            <line x1={x} y1={yControl} x2={x} y2={y} stroke={color} strokeWidth="1.5" />
+                                            <circle cx={x} cy={yControl} r={5} fill={color} />
+                                            {gate.type === 'X' ? (
+                                                <g>
+                                                    <circle cx={x} cy={y} r={11} fill="var(--color-surface-raised)" stroke={color} strokeWidth="1.5" />
+                                                    <line x1={x} y1={y - 7} x2={x} y2={y + 7} stroke={color} strokeWidth="1.5" />
+                                                    <line x1={x - 7} y1={y} x2={x + 7} y2={y} stroke={color} strokeWidth="1.5" />
+                                                </g>
+                                            ) : gate.type === 'Z' ? (
+                                                <circle cx={x} cy={y} r={5} fill={color} />
+                                            ) : (
+                                                <g>
+                                                    <rect x={x - 14} y={y - 14} width={28} height={28} fill="var(--color-surface-raised)" stroke={color} strokeWidth="1.5" rx="5" />
+                                                    <text x={x} y={y + 5} textAnchor="middle" fill={color} fontSize="13" fontWeight="600">{gate.type}</text>
+                                                </g>
+                                            )}
+                                        </g>
+                                    );
                                 });
                             })}
                         </svg>
                     )}
                 </div>
-
-                {/* <div className="p-2 border-t border-white/10 text-xs text-gray-500 text-center bg-primary shrink-0">
-                    Native React SVG Renderer
-                </div> */}
             </div>
         </>
     );

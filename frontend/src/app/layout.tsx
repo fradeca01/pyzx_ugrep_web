@@ -1,23 +1,20 @@
 import type { Metadata } from "next";
-import { Roboto_Mono } from "next/font/google";
+import { IBM_Plex_Mono, IBM_Plex_Sans } from "next/font/google";
 import Header from "@/app/ui/Header";
-import Sidebar from "@/app/ui/Sidebar";
 import "./globals.css";
 
 import React from "react";
 
-// const geistSans = Geist({
-//   variable: "--font-geist-sans",
-//   subsets: ["latin"],
-// });
-// 
-// const geistMono = Geist_Mono({
-//   variable: "--font-geist-mono",
-//   subsets: ["latin"],
-// });
-
-export const robotoMono = Roboto_Mono({
+const plexSans = IBM_Plex_Sans({
   subsets: ["latin"],
+  weight: ["400", "500", "600"],
+  variable: "--font-plex-sans",
+});
+
+const plexMono = IBM_Plex_Mono({
+  subsets: ["latin"],
+  weight: ["400", "500", "600"],
+  variable: "--font-plex-mono",
 });
 
 export const metadata: Metadata = {
@@ -35,7 +32,7 @@ export default function RootLayout({
   return (
     <html lang="en" className="overflow-hidden">
       <body
-        className={`${robotoMono.className}  antialiase h-screen overflow-hidden bg-secondary`}
+        className={`${plexSans.variable} ${plexMono.variable} flex h-dvh flex-col overflow-hidden bg-canvas font-sans antialiased`}
       >
         <Header />
         {children}

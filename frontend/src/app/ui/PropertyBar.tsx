@@ -2,15 +2,7 @@
 
 import { useState, useEffect, useRef } from 'react';
 import { BACKEND_URL } from "../config";
-
-interface BackendGraphData {
-    inputs: number[];
-    adjacency_list: number[][];
-    distance_upper_bound: number;
-    distance_lower_bound?: number;
-    qasmEconder?: string;
-}
-
+import { BackendGraphData, Button, ErrorNote, Icon, JobProgress, Panel, describeError, iconPaths } from "./common";
 
 interface PropertyBarProps {
     isOpen: boolean;
@@ -20,32 +12,30 @@ interface PropertyBarProps {
     backendGraphData: BackendGraphData | null;
 }
 
-
-const InputLabel = ({ title, children }: { title: string, children: React.ReactNode }) => (
-    <div className="mb-4">
-        <label className="block text-sm font-medium text-gray-700 mb-1">
-            {title}
-        </label>
-        {children}
+const Stat = ({ label, value }: { label: string, value: React.ReactNode }) => (
+    <div className="rounded-lg border border-line bg-surface-raised px-3 py-2">
+        <dt className="text-xs text-ink-faint">{label}</dt>
+        <dd className="mt-0.5 font-mono text-lg font-medium">{value}</dd>
     </div>
 );
 
-const buttonStyle = "w-full p-2 bg-blue-600 text-white rounded-md hover:bg-blue-700 transition";
-const outlineButtonStyle = "w-full p-2 border border-blue-600 text-blue-600 rounded-md hover:bg-blue-50 transition flex items-center justify-center gap-2";
+const SectionTitle = ({ children }: { children: React.ReactNode }) => (
+    <h3 className="mb-2 text-xs font-semibold tracking-wider text-ink-faint uppercase">{children}</h3>
+);
 
 export default function PropertyBar({ isOpen, onClose, onOpen, onOpenEncoder, backendGraphData }: PropertyBarProps) {
 
     const [isComputing, setIsComputing] = useState(false);
-    const [estimatedTime, setEstimatedTime] = useState<number | null>(null);
-    const [computedLowerBound, setComputedLowerBound] = useState<string | number | null>(null);
+    const [computedDistance, setComputedDistance] = useState<number | null>(null);
+    const [solverError, setSolverError] = useState<string>("");
     const pollInterval = useRef<NodeJS.Timeout | null>(null);
 
     const [currentJobId, setCurrentJobId] = useState<string | null>(null);
 
 
     useEffect(() => {
-        setComputedLowerBound(null);
-        setEstimatedTime(null);
+        setComputedDistance(null);
+        setSolverError("");
         setIsComputing(false);
         if (pollInterval.current) clearInterval(pollInterval.current);
     }, [backendGraphData]);
@@ -96,8 +86,15 @@ export default function PropertyBar({ isOpen, onClose, onOpen, onOpenEncoder, ba
         if (!backendGraphData) return;
 
         setIsComputing(true);
-        setComputedLowerBound(null);
-        setEstimatedTime(null);
+        setComputedDistance(null);
+        setSolverError("");
+
+        const failWith = (message: string) => {
+            if (pollInterval.current) clearInterval(pollInterval.current);
+            pollInterval.current = null;
+            setSolverError(message);
+            setIsComputing(false);
+        };
 
         try {
             const response = await fetch(`${BACKEND_URL}/solve`, {
@@ -112,40 +109,35 @@ export default function PropertyBar({ isOpen, onClose, onOpen, onOpenEncoder, ba
             const result = await response.json();
 
             if (!result.success) {
-                alert("Errore avvio solver: " + result.error);
-                setIsComputing(false);
+                failWith(result.error);
                 return;
             }
 
             const jobId = result.job_id;
             setCurrentJobId(jobId);
-            setEstimatedTime(result.estimated_time);
 
             pollInterval.current = setInterval(async () => {
                 try {
                     const statusRes = await fetch(`${BACKEND_URL}/status/${jobId}`);
                     const statusData = await statusRes.json();
 
-                    console.log("Polling status:", statusData);
-
-                    if (statusData.status != "processing" && statusData.success === true) {
-                        setComputedLowerBound(statusData.data);
+                    if (statusData.success === false) {
+                        failWith(statusData.error);
+                    } else if (statusData.status != "processing") {
+                        setComputedDistance(statusData.data);
                         setIsComputing(false);
                         clearInterval(pollInterval.current!);
-                    } else if (statusData.status != "processing" && statusData.success === false) {
-                        alert("Errore solver: " + statusData.error);
-                        setIsComputing(false);
-                        clearInterval(pollInterval.current!);
+                        pollInterval.current = null;
                     }
                 } catch (e) {
                     console.error("Polling error", e);
+                    failWith(describeError(e));
                 }
             }, 1000);
 
         } catch (e) {
             console.error(e);
-            setIsComputing(false);
-            alert("Errore di connessione");
+            failWith(describeError(e));
         }
     };
 
@@ -155,143 +147,105 @@ export default function PropertyBar({ isOpen, onClose, onOpen, onOpenEncoder, ba
             pollInterval.current = null;
         }
 
+        setIsComputing(false);
+
         if (currentJobId) {
             try {
                 await fetch(`${BACKEND_URL}/cancel/${currentJobId}`, {
                     method: "POST"
                 });
-                console.log("Job cancellato lato server");
             } catch (e) {
-                console.error("Errore cancellazione job:", e);
+                console.error("Could not cancel the job:", e);
             }
         }
 
-        setIsComputing(false);
         setCurrentJobId(null);
     };
 
+    const renderContent = () => {
+        if (!backendGraphData) {
+            return (
+                <p className="text-sm text-ink-soft">
+                    Generate a code to see its parameters, compute its distance and view its encoder circuit.
+                </p>
+            );
+        }
+
+        const nodeCount = backendGraphData.adjacency_list.length;
+        const k = backendGraphData.inputs.length;
+        const n = nodeCount - k;
+        const edgeCount = backendGraphData.adjacency_list.reduce((total, neighbors) => total + neighbors.length, 0) / 2;
+                const stabilizers = backendGraphData.stabilizers ?? [];
+
+        return (
+            <div className="flex flex-col gap-5">
+                <div>
+                    <p className="font-mono text-2xl font-medium" title="[[n, k, d]]">
+                        [[{n}, {k}, {computedDistance ?? (
+                            <>
+                                <span className="text-[0.8em]">≤</span>
+                                {backendGraphData.distance_upper_bound}
+                            </>
+                        )}]]
+                    </p>
+                    <dl className="mt-3 grid grid-cols-3 gap-2">
+                        <Stat label="Qubits n" value={n} />
+                        <Stat label="Logical k" value={k} />
+                        <Stat label="Edges" value={edgeCount} />
+                    </dl>
+                </div>
+
+                <section>
+                    <SectionTitle>Distance</SectionTitle>
+                    <dl className="mb-3 grid grid-cols-2 gap-2">
+                        <Stat label="Upper bound" value={backendGraphData.distance_upper_bound} />
+                        <Stat label="Exact" value={computedDistance ?? "?"} />
+                    </dl>
+
+                    {isComputing ? (
+                        <JobProgress label="Computing, this may take a while." onStop={handleStop} />
+                    ) : computedDistance === null && (
+                        <Button onClick={handleComputeClick} className="w-full">
+                            Compute exact distance
+                        </Button>
+                    )}
+
+                    {solverError && <div className="mt-3"><ErrorNote>{solverError}</ErrorNote></div>}
+                </section>
+
+                <section>
+                    <SectionTitle>Encoder and exports</SectionTitle>
+                    <div className="flex flex-col gap-2">
+                        <Button variant="secondary" onClick={onOpenEncoder}>
+                            View encoder circuit
+                        </Button>
+                        <Button variant="secondary" onClick={handleDownloadDot} title="Download GraphViz DOT file">
+                            <Icon path={iconPaths.download} />
+                            Download DOT
+                        </Button>
+                    </div>
+                </section>
+
+                {stabilizers.length > 0 && (
+                    <details className="group">
+                        <summary className="flex cursor-pointer list-none items-center gap-1 text-xs font-semibold tracking-wider text-ink-faint uppercase hover:text-ink [&::-webkit-details-marker]:hidden">
+                            <Icon path={iconPaths.chevronRight} className="h-3.5 w-3.5 transition-transform group-open:rotate-90" />
+                            Stabilizers ({stabilizers.length})
+                        </summary>
+                        <ol className="mt-2 max-h-48 overflow-auto rounded-lg border border-line bg-canvas p-2 font-mono text-xs leading-relaxed text-ink-soft">
+                            {stabilizers.map((stabilizer, index) => (
+                                <li key={index} className="whitespace-nowrap">{String(stabilizer)}</li>
+                            ))}
+                        </ol>
+                    </details>
+                )}
+            </div>
+        );
+    };
 
     return (
-        <>
-            {!isOpen && (
-                <button
-                    onClick={onOpen}
-                    className="fixed top-1/5 right-0 -translate-y-1/2 z-20 text-white bg-primary p-2 py-4 rounded-md shadow-lg transition-all opacity-75 hover:opacity-100"
-                >
-                    <svg xmlns="http://www.w3.org/2000/svg" className="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                        <path strokeLinecap="round" strokeLinejoin="round" d="M11 19l-7-7 7-7M18 19l-7-7 7-7" />
-                    </svg>
-                </button>
-            )}
-
-            <div className={`absolute right-0 top-35 bottom-10 w-85 bg-primary shadow-md z-50 h-auto transform transition-transform duration-300 ease-in-out text-white rounded-lg ${isOpen ? '-translate-x-5' : 'translate-x-full'}`}>
-                <div className="px-5 py-5 h-full overflow-y-auto">
-                    <button onClick={onClose} className="text-xl opacity-10 mb-4">
-                        <svg
-                            xmlns="http://www.w3.org/2000/svg"
-                            width="24"
-                            height="24"
-                            fill="none"
-                            viewBox="0 0 24 24"
-                            stroke="currentColor"
-                            strokeWidth="2"
-                        >
-                            <path
-                                strokeLinecap="round"
-                                strokeLinejoin="round"
-                                d="M13 5l7 7-7 7M5 5l7 7-7 7"
-                            />
-                        </svg>
-                    </button>
-
-                    <div className="flex flex-col justify-start">
-                        <h2 className="text-xl font-semibold mb-10">Code properties</h2>
-
-                        <div className='mb-10'>
-                            <h3 className="text-md font-medium">Distance upper bound</h3>
-                            <p className="text-sm text-gray-600 mt-2">
-                                {backendGraphData?.distance_upper_bound ?? "-"}
-                            </p>
-                        </div>
-                        <div className='mb-10'>
-                            <h3 className="text-md font-medium">Exact Distance</h3>
-
-                            <p className="text-sm text-gray-600 mt-2 mb-4 font-mono ">
-                                {computedLowerBound !== null ? computedLowerBound : ""}
-                            </p>
-
-                            {!computedLowerBound && (
-                                <button
-                                    onClick={handleComputeClick}
-                                    disabled={isComputing || !backendGraphData}
-                                    className={buttonStyle}
-                                >
-                                    {isComputing ? "Computing..." : "Compute (MiniZinc)"}
-                                </button>
-                            )}
-
-                            <div className='flex justify-between '>
-
-
-                                {isComputing && estimatedTime && (
-                                    <div className="flex items-center justify-center gap-2 mt-4 p-2 bg-white/10 rounded-md">
-                                        <svg className="animate-spin h-5 w-5 text-blue-400" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
-                                            <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
-                                            <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
-                                        </svg>
-                                        <p className="text-sm font-medium text-gray-300">
-                                            Computing, may take a long time.
-                                        </p>
-                                    </div>
-                                )}
-                                {isComputing && (
-                                    <>
-                                        <div className="flex justify-center mt-2">
-                                            <button
-                                                onClick={handleStop}
-                                                className="p-2 text-red-500 hover:bg-red-100 rounded-full transition-colors"
-                                                title="Stop generation"
-                                            >
-                                                <svg xmlns="http://www.w3.org/2000/svg" className="h-6 w-6" viewBox="0 0 24 24" fill="currentColor">
-                                                    <path d="M6 6h12v12H6z" />
-                                                </svg>
-                                            </button>
-                                        </div>
-
-                                    </>
-                                )}
-                            </div>
-                        </div>
-
-
-                        <div className='mb-10'>
-                            <h3 className="text-md font-medium mb-5">Exports</h3>
-                            <div className="flex flex-col gap-3">
-
-                                <button
-                                    onClick={handleDownloadDot}
-                                    disabled={!backendGraphData}
-                                    className={`${outlineButtonStyle} border-white text-white hover:bg-white/10`}
-                                    title="Download GraphViz DOT file"
-                                >
-                                    <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor" className="w-5 h-5">
-                                        <path strokeLinecap="round" strokeLinejoin="round" d="M3 16.5v2.25A2.25 2.25 0 0 0 5.25 21h13.5A2.25 2.25 0 0 0 21 18.75V16.5M16.5 12 12 16.5m0 0L7.5 12m4.5 4.5V3" />
-                                    </svg>
-                                    Download DOT
-                                </button>
-                            </div>
-                        </div>
-
-                        <div className='mb-10'>
-                            <h3 className="text-md font-medium mb-5">Code encoder</h3>
-                            <button onClick={onOpenEncoder} className={`${buttonStyle} flex items-center justify-center gap-2`}>
-                                View Circuit
-                            </button>
-                        </div>
-
-                    </div>
-                </div>
-            </div>
-        </>
+        <Panel side="right" title="Code properties" openLabel="Properties" isOpen={isOpen} onOpen={onOpen} onClose={onClose}>
+            {renderContent()}
+        </Panel>
     );
 }
